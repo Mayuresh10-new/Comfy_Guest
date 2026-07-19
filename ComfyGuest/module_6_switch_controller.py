@@ -4,27 +4,23 @@
 import time
 import grovepi
 
-
 class SwitchController:
-    def __init__(self, port=3):
-        """
-        Initialize Switch Controller
-
-        port : Digital port number
-        """
+    def __init__(self, port=3, debounce_time=0.2):
 
         self.port = port
+        self.debounce_time = debounce_time
 
         grovepi.pinMode(self.port, "INPUT")
 
         self.last_state = 0
+        self.last_press_time = 0
 
+        # Operating Mode
+        # False = Planner Mode
+        # True  = Manual Mode
         self.manual_mode = False
 
-        # Manual state for every actuator. The physical button only
-        # ever drives "relay" directly (see update() below). The other
-        # actuators are set via dashboard-issued manual commands, but
-        # live here too so main.py has one place to read from.
+        # Manual actuator states
         self.manual_states = {
             "relay": False,
             "room_led": False,
@@ -34,84 +30,86 @@ class SwitchController:
             "circle_plus": False,
         }
 
+    # Scheduler Update
     def update(self):
-        """
-        Reads the physical button and updates the manual control state.
-
-        Returns:
-            True  -> Button was pressed
-            False -> No new button press
-        """
-
-        pressed = False
-
         try:
             current = grovepi.digitalRead(self.port)
 
-            # Rising edge detection
-            if current == 1 and self.last_state == 0:
+        except IOError as e:
+            print(f"Switch read error: {e}")
+            return False
 
-                pressed = True
+        now = time.time()
+        changed = False
 
-                # First press enters Manual Mode
-                if not self.manual_mode:
-                    self.manual_mode = True
-                    self.manual_states["relay"] = True
+        # Rising Edge Detection + Debounce
+        if (
+            current == 1
+            and self.last_state == 0
+            and (now - self.last_press_time) >= self.debounce_time
+        ):
+            self.last_press_time = now
+            changed = True
 
-                # Subsequent presses toggle the relay only.
-                # (The physical button was only ever wired to the relay;
-                # the other actuators are controlled from the dashboard.)
-                else:
-                    self.manual_states["relay"] = not self.manual_states["relay"]
+            # Toggle Operating Mode
+            self.manual_mode = not self.manual_mode
 
-                # Debounce
-                time.sleep(0.2)
+            if self.manual_mode:
+                print("\n========== SWITCH ==========")
+                print("Manual Mode Enabled")
+                print("============================")
+            else:
+                print("\n========== SWITCH ==========")
+                print("Planner Mode Enabled")
+                print("============================")
+        self.last_state = current
+        return changed
 
-            self.last_state = current
+    # Dashboard Manual Commands
+    def apply_manual_command(self, command):
+        if not isinstance(command, dict):
+            return
 
-        except IOError:
-            pass
-
-        return pressed
-
-    def apply_manual_command(self, command: dict):
-        """
-        Merges an externally-issued manual command (e.g. from the
-        dashboard) into the current state. Only keys present in the
-        command are updated — anything omitted is left untouched.
-        """
-
+        # Manual Mode
         if "manual_mode" in command:
             self.manual_mode = bool(command["manual_mode"])
 
-        for key in self.manual_states.keys():
+        # Manual Actuator States
+        for key in self.manual_states:
             if key in command:
                 self.manual_states[key] = bool(command[key])
 
+    # Force Planner Mode
+    def auto_mode(self):
+        self.manual_mode = False
+        for key in self.manual_states:
+            self.manual_states[key] = False
+        print("Planner Mode Enabled")
+
+    # Force Manual Mode
+    def manual_mode_on(self):
+        self.manual_mode = True
+        print("Manual Mode Enabled")
+
+    # Mode
+    def get_mode(self):
+        return "MANUAL" if self.manual_mode else "PLANNER"
+
+    # Manual States
+    def get_states(self):
+        return self.manual_states.copy()
+
+    # Compatibility Property
     @property
     def manual_relay(self):
-        """Kept for backwards compatibility with older code."""
         return self.manual_states["relay"]
 
-    def auto_mode(self):
-        """
-        Switch back to Automatic Mode.
-        """
+    # Debug
+    def print_status(self):
+        print("\n========== SWITCH ==========")
+        print(f"Mode : {self.get_mode()}")
 
-        self.manual_mode = False
+        for key, value in self.manual_states.items():
+            print(f"{key:12}: {value}")
 
-        for key in self.manual_states.keys():
-            self.manual_states[key] = False
-
-    def get_mode(self):
-        """
-        Returns the current operating mode.
-
-        Returns:
-            "MANUAL" or "AUTO"
-        """
-
-        if self.manual_mode:
-            return "MANUAL"
-
-        return "AUTO"
+        print("============================")

@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# main.py
-
 import sys
 import time
 import json
@@ -18,32 +15,20 @@ from module_7_mqtt_client import MQTTClient
 from module_8_weather import WeatherSensor
 from module_9_plugwise import PlugwiseController
 
+dht = DHT11Sensor(port=2)
 
-# INITIALIZE SENSORS
-
-# Indoor DHT11
-dht = DHT11Sensor(
-    port=2
-)
-
-# PIR Motion Sensor
 pir = PIRSensor(
     port=8,
-    timeout=60
+    timeout=15
 )
 
-# Light Sensor
 light = LightSensor(
     port=0,
     threshold=400
 )
 
-# Manual Switch
-switch = SwitchController(
-    port=3
-)
+switch = SwitchController(port=3)
 
-# WEATHER MODULE
 weather = WeatherSensor(
     api_key="458d5eaa4b0c933c08360cfe5c243d48",
     latitude=19.0760,
@@ -51,24 +36,29 @@ weather = WeatherSensor(
     update_interval=300
 )
 
-# OUTPUT CONTROLLER
 outputs = OutputController(
     relay_port=5,
     room_led_port=6,
     status_led_port=7,
-    new_led_port = 4
+    new_led_port=4
 )
 
-# PLUGWISE CONTROLLER
 plugwise = PlugwiseController(
     usb="/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A6010MU7-if00-port0",
     circle_plus_mac="000D6F0005692784",
     circle_mac="000D6F000416E6F4"
 )
 
-# MQTT CLIENT
 mqtt = MQTTClient()
 mqtt.connect()
+
+last_sensor_publish = 0
+last_output_publish = 0
+last_status_print = 0
+
+SENSOR_PUBLISH_INTERVAL = 2.0
+OUTPUT_PUBLISH_INTERVAL = 2.0
+STATUS_PRINT_INTERVAL = 2.0
 
 print("========================================")
 print(" HOTEL AUTOMATION SYSTEM")
@@ -79,239 +69,255 @@ print("MQTT Client    : CONNECTED")
 print("Waiting for AI Planner...")
 print("========================================")
 
-
 try:
-
     while True:
+        now = time.time()
+        mqtt.reconnect()
+        plugwise.reconnect()
+        manual_command = mqtt.get_latest_manual_command()
 
-        # READ INDOOR SENSORS
-        temperature, humidity = dht.read()
-        motion = pir.read()
-        occupied = pir.occupied()
-        light_value = light.read()
-        dark = light.is_dark()
+        if manual_command is not None:
+            print("\n========= MANUAL OVERRIDE =========")
+            print(manual_command)
+            print("===================================")
+
+            try:
+                switch.apply_manual_command(
+                    manual_command
+                )
+            except Exception as e:
+                print(f"Invalid manual override : {e}")
+
+            mqtt.clear_latest_manual_command()
+
         switch.update()
-        
-        # READ WEATHER
-        weather_data = weather.read()
-        
-        # Create Sensor Payload
-        sensor_data = {
+        dht.update()
+        pir.update()
+        light.update()
+        weather.update()
 
+        if switch.manual_mode:
+            manual = switch.manual_states
+            changed = False
+
+            if manual["relay"] != outputs.relay_target:
+                outputs.relay_on() if manual["relay"] else outputs.relay_off()
+                changed = True
+
+            if manual["room_led"] != outputs.room_light_target:
+                outputs.room_light_on() if manual["room_led"] else outputs.room_light_off()
+                changed = True
+
+            if manual["status_led"] != outputs.status_target:
+                outputs.status_led_on() if manual["status_led"] else outputs.status_led_off()
+                changed = True
+
+            if manual["new_led"] != outputs.new_target:
+                outputs.new_led_on() if manual["new_led"] else outputs.new_led_off()
+                changed = True
+
+            if changed:
+                outputs.update()
+
+            if manual["circle"] != plugwise.circle_target:
+                plugwise.circle_on() if manual["circle"] else plugwise.circle_off()
+
+            if manual["circle_plus"] != plugwise.circle_plus_target:
+                plugwise.circle_plus_on() if manual["circle_plus"] else plugwise.circle_plus_off()
+
+            plugwise.update()
+            
+        sensor_data = {
             # Indoor Environment
-            "inside_temperature": temperature,
-            "inside_humidity": humidity,
+            "inside_temperature": dht.temperature,
+            "inside_humidity": dht.humidity,
 
             # Occupancy
-            "motion": motion,
-            "occupied": occupied,
+            "motion": pir.motion,
+            "occupied": pir.occupied,
 
             # Light
-            "light_value": light_value,
-            "dark": dark,
+            "light_value": light.value,
+            "dark": light.dark,
 
             # Manual Override
             "manual_mode": switch.manual_mode,
             "manual_relay": switch.manual_relay
         }
 
-        # Add Weather Data
-        if weather_data:
-            sensor_data.update(weather_data)
+        if weather.weather_data:
+            sensor_data.update(
+                weather.weather_data
+            )
 
-        # Publish Sensor Data
-        mqtt.publish(sensor_data)
+        if now - last_sensor_publish >= SENSOR_PUBLISH_INTERVAL:
+            mqtt.publish(sensor_data)
+            last_sensor_publish = now
 
-        # Display Sensor Data
-        print("\n================ SENSOR DATA ================")
-        for key, value in sensor_data.items():
-            print(f"{key:25}: {value}")
-        print("=============================================")
+        if now - last_status_print >= STATUS_PRINT_INTERVAL:
+            print("\n================ SENSOR DATA ================")
+            for key, value in sensor_data.items():
+                print(f"{key:25}: {value}")
+            print("=============================================")
+            last_status_print = now
 
-        # Check for AI Planner Commands
         action = mqtt.get_latest_action()
 
         if action is not None:
+            if switch.manual_mode:
+                print(
+                    "\n[AI Planner command ignored - "
+                    "Manual Mode Active]"
+                )
+                mqtt.clear_latest_action()
+            else:
+                print("\n============= AI COMMAND =============")
+                print(action)
+                print("======================================")
 
-            print("\n============= AI COMMAND =============")
-            print(action)
-            print("======================================")
+                cooling = None
+                heating = None
+                blinds = None
+                lights = None
+                ventilation = None
+                airpurifier = None
 
-            # Execute AI Planner Commands
-            # Parse payload into desired states
-            cooling = heating = blinds = lights = ventilation = airpurifier = None
+                for room, commands in action.items():
+                    print(f"\nRoom : {room}")
+                    for raw_command in commands:
+                        print(f"Received : {raw_command}")
+                        try:
+                            device, value = raw_command.lower().split(":", 1)
+                            device = device.strip()
+                            value = bool(
+                                int(value.strip())
+                            )
+                        except Exception as e:
+                            print(
+                                f"Invalid command: "
+                                f"{raw_command} ({e})"
+                            )
+                            continue
+                        print(
+                            f"Parsed -> "
+                            f"{device} = {value}"
+                        )
+                        if device == "cooling":
+                            cooling = value
 
-            for room, commands in action.items():
-                print(f"Room : {room}")
-                for raw_command in commands:
-                    print(f"Received : {raw_command}")
-                    try:
-                        device, value = raw_command.lower().split(":", 1)
-                        device = device.strip()
-                        value = bool(int(value.strip()))
-                    except Exception as e:
-                        print(f"Invalid command : {raw_command} ({e})")
-                        continue
-                    print(f"Parsed -> Device={device}, Value={value}")
+                        elif device == "heating":
+                            heating = value
 
-                    if device == "cooling":
-                        cooling = value
-                    elif device == "heating":
-                        heating = value
-                    elif device == "blinds":
-                        blinds = value
-                    elif device == "airpurifier":
-                        airpurifier = value
-                    elif device == "lights":
-                        lights = value
-                    elif device == "ventilation":
-                        ventilation = value
+                        elif device == "blinds":
+                            blinds = value
+
+                        elif device == "lights":
+                            lights = value
+
+                        elif device == "ventilation":
+                            ventilation = value
+
+                        elif device == "airpurifier":
+                            airpurifier = value
+
+                        else:
+                            print(
+                                f"Unknown device: {device}"
+                            )
+                
+                # Execute GrovePi Outputs
+                if cooling is not None:
+                    if cooling:
+                        outputs.room_light_on()
                     else:
-                        print(f"Unknown device : {device}")
+                        outputs.room_light_off()
 
-            # Execute GrovePi outputs (I2C)
-            grove_queue = []
+                if heating is not None:
+                    if heating:
+                        outputs.new_led_on()
+                    else:
+                        outputs.new_led_off()
 
-            if cooling is not None:
-                grove_queue.append(outputs.room_light_on if cooling else outputs.room_light_off)
+                if blinds is not None:
+                    if blinds:
+                        outputs.status_led_on()
+                    else:
+                        outputs.status_led_off()
 
-            if heating is not None:
-                grove_queue.append(outputs.new_led_on if heating else outputs.new_led_off)
+                if airpurifier is not None:
+                    if airpurifier:
+                        outputs.relay_on()
+                    else:
+                        outputs.relay_off()
 
-            if blinds is not None:
-                grove_queue.append(outputs.status_led_on if blinds else outputs.status_led_off)
+                if lights is not None:
+                    if lights:
+                        plugwise.circle_on()
+                    else:
+                        plugwise.circle_off()
 
-            if airpurifier is not None:
-                grove_queue.append(outputs.relay_on if airpurifier else outputs.relay_off)
+                if ventilation is not None:
+                    if ventilation:
+                        plugwise.circle_plus_on()
+                    else:
+                        plugwise.circle_plus_off()
 
-            # Give GrovePi a moment before the first write
-            time.sleep(0.10)
+                outputs.update()
+                plugwise.update()
+                outputs.print_status()
+                plugwise.print_status()
+                mqtt.clear_latest_action()
 
-            for i, operation in enumerate(grove_queue):
-                if i == 0:
-                    operation()
-                    time.sleep(0.05)
-                    operation()
-                else:
-                    operation()
-                time.sleep(0.20)
-
-            # Execute Plugwise outputs (USB)
-            if lights is not None:
-                if lights:
-                    plugwise.circle_on()
-                else:
-                    plugwise.circle_off()
-
-            if ventilation is not None:
-                if ventilation:
-                    plugwise.circle_plus_on()
-                else:
-                    plugwise.circle_plus_off()
-
-            # Display Output Status
-            outputs.print_status()
-            plugwise.print_status()
-
-            # Clear Latest Command
-            mqtt.clear_latest_action()
-
-        # Check for Dashboard Manual Override Commands
-
-        manual_command = mqtt.get_latest_manual_command()
- 
-        if manual_command is not None:
- 
-            print("\n========= MANUAL OVERRIDE (Dashboard) =========")
-            print(manual_command)
-            print("=================================================")
- 
-            try:
-                switch.apply_manual_command(manual_command)
-            except Exception as e:
-                print(f"Invalid manual override payload : {manual_command} ({e})")
-            mqtt.clear_latest_manual_command()
-
-        # Manual Mode Override
-        if switch.manual_mode:
-
-            manual = switch.manual_states
- 
-            outputs.relay_on() if manual["relay"] else outputs.relay_off()
-            outputs.room_light_on() if manual["room_led"] else outputs.room_light_off()
-            outputs.status_led_on() if manual["status_led"] else outputs.status_led_off()
-            outputs.new_led_on() if manual["new_led"] else outputs.new_led_off()
- 
-            plugwise.circle_on() if manual["circle"] else plugwise.circle_off()
-            plugwise.circle_plus_on() if manual["circle_plus"] else plugwise.circle_plus_off()
-
-        # Optional Safety Logic
-        # Turn OFF relay if DHT11 reading is unavailable
-        if temperature is None:
+        if dht.temperature is None:
             outputs.relay_off()
+            outputs.update()
 
-        # Print Current Output States
-        relay_state, room_led_state, status_led_state, new_led_state = outputs.get_states().values()
-        circle_state, circle_plus_state = plugwise.get_states().values()
-        print("\n--------------- OUTPUTS ----------------")
-        print(f"Relay      : {'ON' if relay_state else 'OFF'}")
-        print(f"Room LED   : {'ON' if room_led_state else 'OFF'}")
-        print(f"Status LED : {'ON' if status_led_state else 'OFF'}")
-        print(f"New LED : {'ON' if new_led_state else 'OFF'}")
-        print(f"Circle      : {'ON' if circle_state else 'OFF'}")
-        print(f"Circle+     : {'ON' if circle_plus_state else 'OFF'}")
-        print("----------------------------------------")
+        if now - last_output_publish >= OUTPUT_PUBLISH_INTERVAL:
+            output_states = outputs.get_states()
+            plugwise_states = plugwise.get_states()
 
-        actuator_status = {
-            "relay": relay_state,
-            "room_led": room_led_state,
-            "status_led": status_led_state,
-            "new_led": new_led_state,
-            "circle": circle_state,
-            "circle_plus": circle_plus_state
-        }
+            actuator_status = {
+                "relay": output_states["relay"],
+                "room_led": output_states["room_led"],
+                "status_led": output_states["status_led"],
+                "new_led": output_states["new_led"],
+                "circle": plugwise_states["circle"],
+                "circle_plus": plugwise_states["circle_plus"]
+            }
 
-        mqtt.client.publish(
-            mqtt.ACTUATOR_STATUS_TOPIC,
-            json.dumps(actuator_status),
-            qos=1
-        )
+            mqtt.client.publish(
+                mqtt.ACTUATOR_STATUS_TOPIC,
+                json.dumps(actuator_status),
+                qos=1
+            )
+            last_output_publish = now
 
-        # Loop Delay
-        time.sleep(0.5)
+        time.sleep(0.01)
 
 except KeyboardInterrupt:
-
     print("\n")
     print("========================================")
     print("Stopping Hotel Automation System...")
     print("========================================")
-
 except Exception as e:
-
     print("\n")
     print("========================================")
     print("Unexpected Error")
     print("========================================")
     print(e)
-
 finally:
-    # Turn OFF all outputs
     try:
         outputs.cleanup()
     except Exception as e:
-        print("Output Cleanup Error:", e)    
+        print("Output Cleanup Error:", e)
     try:
         plugwise.cleanup()
     except Exception as e:
         print("Plugwise Cleanup Error:", e)
-
-    # Disconnect MQTT
     try:
         mqtt.disconnect()
     except Exception as e:
         print("MQTT Disconnect Error:", e)
-
     print("\n========================================")
     print("Hotel Automation System Stopped")
     print("========================================")
