@@ -195,7 +195,7 @@ if "mqtt_started" not in st.session_state:
 # Refresh every 2 seconds
 # ---------------------------------------------------
 
-st_autorefresh(interval=2000, key="mqtt_refresh")
+st_autorefresh(interval=500, key="mqtt_refresh")
 
 # ---------------------------------------------------
 # Header with live status pill
@@ -249,7 +249,7 @@ with top_col1:
     )
 
 with top_col2:
-    st.caption("Mirrors the physical button on GrovePi port D3.")
+    st.caption("Have a Nice Stay!")
 
 st.write("")
 
@@ -263,14 +263,25 @@ override_just_changed = st.session_state.get("override_just_changed", False)
 
 if "manual_mode_toggle" not in st.session_state:
     st.session_state.manual_mode_toggle = current_manual_mode
-
     for key, _, _ in ACTUATOR_CONTROLS:
         st.session_state[f"manual_{key}_toggle"] = bool(
             mqtt_handler.latest_actuator_status.get(key, False)
         )
 
 elif override_just_changed:
-    st.session_state.override_just_changed = False
+
+    expected = {
+        key: st.session_state[f"manual_{key}_toggle"]
+        for key, _, _ in ACTUATOR_CONTROLS
+    }
+
+    actual = {
+        key: bool(mqtt_handler.latest_actuator_status.get(key, False))
+        for key, _, _ in ACTUATOR_CONTROLS
+    }
+
+    if expected == actual:
+        st.session_state.override_just_changed = False
 
 else:
     st.session_state.manual_mode_toggle = current_manual_mode
@@ -282,6 +293,7 @@ else:
 
 
 def _publish_override():
+
     st.session_state.override_just_changed = True
 
     actuator_states = {
