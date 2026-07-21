@@ -35,23 +35,26 @@ The planner combines **Artificial Intelligence Planning** with **IoT sensor data
 ## Repository Structure
 
 ```text
-backend/
-├── actionExecutor.py
-├── fact_generator.py
-├── goalManager.py
-├── plannerInterface.py
-├── planParser.py
-└── stateParser.py
-
-models/
-└── models.py
-
-pddl/
-├── domain.pddl
-└── problem.pddl
-
-scripts/
-└── run.sh
+AI_Planner/
+├── README.md
+├── backend/
+│   ├── actionParser.py
+│   ├── current_state_DB.db
+│   ├── fact_generator.py
+│   ├── goalManager.py
+│   ├── planParser.py
+│   ├── planRunner.py
+│   ├── problemGenerator.py
+│   └── stateParser.py
+├── models/
+│   └── models.py
+├── MQTT/
+│   ├── publish_plan.py
+│   ├── subscribe_actuators.py
+│   └── subscriber.py
+└── PDDL/
+    ├── domain.pddl
+    └── problem_template.pddl
 ```
 
 ## Objective
