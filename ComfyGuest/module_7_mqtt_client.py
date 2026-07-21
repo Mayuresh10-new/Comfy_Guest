@@ -29,7 +29,14 @@ class MQTTClient:
         self.DEBUG = False
 
         # MQTT Client
+        # callback_api_version must be VERSION2 here, since on_connect/
+        # on_disconnect below use the newer (flags, reason_code,
+        # properties) signature. Without this, paho-mqtt defaults to
+        # the old 3-arg callback style and calls them with too few
+        # arguments, causing "missing 1 required positional argument:
+        # 'reason_code'".
         self.client = mqtt.Client(
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             client_id="raspberry_pi"
         )
         self.client.username_pw_set(

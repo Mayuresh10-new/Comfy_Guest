@@ -26,7 +26,11 @@ class OutputController:
         grovepi.pinMode(self.new_led, "OUTPUT")
 
         # Output Write Delay (seconds)
-        self.write_delay = 0.0020
+        # GrovePi communicates over I2C, and the bus needs real settling
+        # time between commands — especially since the main loop also
+        # does digitalRead() for sensors/switch every ~10ms. 2ms was too
+        # tight and caused intermittent dropped/corrupted writes.
+        self.write_delay = 0.05
 
         # Current States
         self.relay_state = False
@@ -47,36 +51,39 @@ class OutputController:
         grovepi.digitalWrite(port, int(value))
         time.sleep(self.write_delay)
 
-    # Apply pending outputs immediately
-    def update(self):
+    # Apply pending outputs immediately.
+    # force=True re-sends every output's target state regardless of
+    # whether it "looks" already applied — used for periodic resync so
+    # a silently dropped GrovePi write gets self-corrected.
+    def update(self, force=False):
 
-        if self.relay_state != self.relay_target:
+        if force or self.relay_state != self.relay_target:
             try:
                 self._write(self.relay, self.relay_target)
                 self.relay_state = self.relay_target
-            except IOError:
-                print("Relay Write Error")
+            except Exception as e:
+                print(f"Relay Write Error : {e}")
 
-        if self.room_light_state != self.room_light_target:
+        if force or self.room_light_state != self.room_light_target:
             try:
                 self._write(self.room_led, self.room_light_target)
                 self.room_light_state = self.room_light_target
-            except IOError:
-                print("Room LED Write Error")
+            except Exception as e:
+                print(f"Room LED Write Error : {e}")
 
-        if self.status_state != self.status_target:
+        if force or self.status_state != self.status_target:
             try:
                 self._write(self.status_led, self.status_target)
                 self.status_state = self.status_target
-            except IOError:
-                print("Status LED Write Error")
+            except Exception as e:
+                print(f"Status LED Write Error : {e}")
 
-        if self.new_state != self.new_target:
+        if force or self.new_state != self.new_target:
             try:
                 self._write(self.new_led, self.new_target)
                 self.new_state = self.new_target
-            except IOError:
-                print("New LED Write Error")
+            except Exception as e:
+                print(f"New LED Write Error : {e}")
 
     # Relay
     def relay_on(self):

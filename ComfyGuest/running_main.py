@@ -57,18 +57,10 @@ mqtt.connect()
 last_sensor_publish = 0
 last_output_publish = 0
 last_status_print = 0
-last_actuator_resync = 0
 
 SENSOR_PUBLISH_INTERVAL = 2.0
 OUTPUT_PUBLISH_INTERVAL = 2.0
 STATUS_PRINT_INTERVAL = 2.0
-
-# How often to unconditionally re-send the current target state to
-# every actuator, regardless of whether it "looks" already applied.
-# This self-heals a write that GrovePi silently dropped (no exception
-# raised, but the physical pin never actually flipped) — without
-# writing every loop iteration, which would flood the I2C bus.
-ACTUATOR_RESYNC_INTERVAL = 1.0
 
 print("========================================")
 print(" HOTEL AUTOMATION SYSTEM")
@@ -136,26 +128,7 @@ try:
                 plugwise.circle_plus_on() if manual["circle_plus"] else plugwise.circle_plus_off()
 
             plugwise.update()
-
-        ####################################################
-        # Periodic Actuator Resync (self-heal dropped writes)
-        ####################################################
-
-        if now - last_actuator_resync >= ACTUATOR_RESYNC_INTERVAL:
-
-            outputs.update(force=True)
-
-            try:
-                plugwise.update(force=True)
-            except TypeError:
-                # PlugwiseController.update() doesn't support force=
-                # yet — fall back to a normal update so this doesn't
-                # crash the whole program. Patch module_9_plugwise.py
-                # to add the same force parameter as OutputController.
-                plugwise.update()
-
-            last_actuator_resync = now
-
+            
         sensor_data = {
             # Indoor Environment
             "inside_temperature": dht.temperature,
