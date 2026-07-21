@@ -44,7 +44,7 @@ backend/
 └── stateParser.py
 
 models/
-└── RoomState.py
+└── models.py
 
 pddl/
 ├── domain.pddl
